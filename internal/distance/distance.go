@@ -47,7 +47,7 @@ func CosineSimilarity(a, b []float32) float32 {
 		magnitudeB += b[i] * b[i]
 	}
 	if magnitudeA == 0 || magnitudeB == 0 {
-		log.Panic("one of the vectors is zero, cannot compute cosine similarity")
+		return 0
 	}
 	return dotProduct / float32(math.Pow(float64(magnitudeA), 0.5)*math.Pow(float64(magnitudeB), 0.5))
 }
