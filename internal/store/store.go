@@ -46,12 +46,12 @@ func (s *Store) Add(v []float32) int {
 }
 
 // Get returns the vector with the given ID
-// It returens a slice of float32 which is the vector data
+// It returns a slice of float32 which is the vector data
 func (s *Store) Get(id int) []float32 {
 	if id < 0 || id >= s.Len() {
 		log.Panic("invalid vector ID")
 	}
 	start := id * s.dim
 	end := start + s.dim
-	return s.data[start:end]
+	return s.data[start:end:end]
 }
