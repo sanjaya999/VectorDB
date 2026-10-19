@@ -18,7 +18,6 @@ internal/store/      flat vector storage and search
 - **`float32` everywhere:** it matches what embedding models and standard
   datasets use, and halves memory compared to `float64`.
 
-More reasoning is in [DECISIONS.md](DECISIONS.md).
 
 ## Run the tests
 
