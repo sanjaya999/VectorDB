@@ -31,7 +31,7 @@ func ids(rs []Result) []int {
 // Results come back closest first, with the right distances.
 func TestSearchOrderAndDistances(t *testing.T) {
 	s := newSearchStore()
-	got := s.Search([]float32{0, 0}, 4, distance.L2Squared)
+	got := s.searchSort([]float32{0, 0}, 4, distance.L2Squared)
 
 	wantIDs := []int{0, 2, 3, 1}
 	wantDists := []float32{0, 2, 25, 200}
@@ -63,7 +63,7 @@ func TestSearchK(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newSearchStore()
-			got := s.Search([]float32{0, 0}, tt.k, distance.L2Squared)
+			got := s.searchSort([]float32{0, 0}, tt.k, distance.L2Squared)
 			if !slices.Equal(ids(got), tt.want) {
 				t.Errorf("IDs = %v, want %v", ids(got), tt.want)
 			}
@@ -75,7 +75,7 @@ func TestSearchK(t *testing.T) {
 // Distances from [10, 9]: id0=181, id1=1, id2=145, id3=74
 func TestSearchDifferentQuery(t *testing.T) {
 	s := newSearchStore()
-	got := s.Search([]float32{10, 9}, 2, distance.L2Squared)
+	got := s.searchSort([]float32{10, 9}, 2, distance.L2Squared)
 	want := []int{1, 3}
 	if !slices.Equal(ids(got), want) {
 		t.Errorf("IDs = %v, want %v", ids(got), want)
@@ -85,7 +85,7 @@ func TestSearchDifferentQuery(t *testing.T) {
 // Searching an empty store returns nothing, without crashing.
 func TestSearchEmptyStore(t *testing.T) {
 	s := New(2)
-	got := s.Search([]float32{0, 0}, 3, distance.L2Squared)
+	got := s.searchSort([]float32{0, 0}, 3, distance.L2Squared)
 	if len(got) != 0 {
 		t.Errorf("got %v, want no results", got)
 	}
@@ -95,7 +95,7 @@ func TestSearchEmptyStore(t *testing.T) {
 func TestSearchDimMismatchPanics(t *testing.T) {
 	s := newSearchStore()
 	mustPanic(t, "Search wrong dim", func() {
-		s.Search([]float32{1, 2, 3}, 1, distance.L2Squared)
+		s.searchSort([]float32{1, 2, 3}, 1, distance.L2Squared)
 	})
 }
 
@@ -106,7 +106,7 @@ func TestSearchCustomDistance(t *testing.T) {
 	farthest := func(a, b []float32) float32 {
 		return -distance.L2Squared(a, b)
 	}
-	got := s.Search([]float32{0, 0}, 1, farthest)
+	got := s.searchSort([]float32{0, 0}, 1, farthest)
 	if len(got) != 1 || got[0].ID != 1 {
 		t.Errorf("got %v, want ID 1 (the farthest vector)", ids(got))
 	}
@@ -115,12 +115,34 @@ func TestSearchCustomDistance(t *testing.T) {
 // Searching must not change the stored data.
 func TestSearchDoesNotModifyStore(t *testing.T) {
 	s := newSearchStore()
-	s.Search([]float32{0, 0}, 4, distance.L2Squared)
+	s.searchSort([]float32{0, 0}, 4, distance.L2Squared)
 
 	if s.Len() != 4 {
 		t.Errorf("Len = %d after search, want 4", s.Len())
 	}
 	if v := s.Get(3); v[0] != 3 || v[1] != 4 {
 		t.Errorf("vector 3 = %v after search, want [3 4]", v)
+	}
+}
+
+// Search (heap) must return exactly what searchSort returns,
+// on random data with many different k values.
+func TestSearchMatchesSearchSort(t *testing.T) {
+	s := randomStore(1000, 16)
+
+	for _, k := range []int{1, 5, 10, 100, 999, 1000, 2000} {
+		query := randomVector(16)
+
+		got := s.Search(query, k, distance.L2Squared)
+		want := s.Search(query, k, distance.L2Squared)
+		if len(got) != len(want) {
+			t.Fatalf("k=%d: got %d results, want %d", k, len(got), len(want))
+		}
+		for i := range want {
+			if got[i].ID != want[i].ID {
+				t.Errorf("k=%d, position %d: got ID %d, want ID %d",
+					k, i, got[i].ID, want[i].ID)
+			}
+		}
 	}
 }
