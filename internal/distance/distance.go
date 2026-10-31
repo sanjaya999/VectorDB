@@ -51,3 +51,9 @@ func CosineSimilarity(a, b []float32) float32 {
 	}
 	return dotProduct / float32(math.Pow(float64(magnitudeA), 0.5)*math.Pow(float64(magnitudeB), 0.5))
 }
+
+// CosineDistance turns similarity into a distance: lower = more similar.
+// Same direction -> 0, perpendicular -> 1, opposite -> 2.
+func CosineDistance(a, b []float32) float32 {
+	return 1 - CosineSimilarity(a, b)
+}
