@@ -25,12 +25,27 @@ func L2Squared(a, b []float32) float32 {
 	if len(a) != len(b) {
 		log.Panic("vectors must be the same length")
 	}
-	var sum float32
-	for i := range len(a) {
-		diff := a[i] - b[i]
-		sum += diff * diff
+	b = b[:len(a)]
+
+	var s0, s1, s2, s3 float32 // four separate running totals
+	i := 0
+	for ; i+4 <= len(a); i += 4 { // take four numbers per step
+		a4 := a[i : i+4 : i+4]
+		b4 := b[i : i+4 : i+4]
+		d0 := a4[0] - b4[0]
+		d1 := a4[1] - b4[1]
+		d2 := a4[2] - b4[2]
+		d3 := a4[3] - b4[3]
+		s0 += d0 * d0
+		s1 += d1 * d1
+		s2 += d2 * d2
+		s3 += d3 * d3
 	}
-	return sum
+	for ; i < len(a); i++ { // leftovers, when the length isn't a multiple of 4
+		d := a[i] - b[i]
+		s0 += d * d
+	}
+	return s0 + s1 + s2 + s3
 }
 
 // cosine similarity implementation

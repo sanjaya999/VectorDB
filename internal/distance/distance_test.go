@@ -56,3 +56,39 @@ func TestMismatchedLengthPanics(t *testing.T) {
 	}()
 	Dot([]float32{1, 2}, []float32{1})
 }
+
+var sink float32
+
+// the old version, kept here only for comparison
+func l2SquaredSimple(a, b []float32) float32 {
+	var sum float32
+	for i := range len(a) {
+		diff := a[i] - b[i]
+		sum += diff * diff
+	}
+	return sum
+}
+
+func benchVectors() ([]float32, []float32) {
+	x := make([]float32, 128)
+	y := make([]float32, 128)
+	for i := range x {
+		x[i] = float32(i)
+		y[i] = float32(i * 2)
+	}
+	return x, y
+}
+
+func BenchmarkL2SquaredSimple(b *testing.B) {
+	x, y := benchVectors()
+	for i := 0; i < b.N; i++ {
+		sink = l2SquaredSimple(x, y)
+	}
+}
+
+func BenchmarkL2Squared(b *testing.B) {
+	x, y := benchVectors()
+	for i := 0; i < b.N; i++ {
+		sink = L2Squared(x, y)
+	}
+}
