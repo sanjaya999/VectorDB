@@ -8,20 +8,22 @@ import (
 )
 
 type Index struct {
-	store     *store.Store       //vector lives in this store
-	dist      store.DistanceFunc //measure closeness
-	m         int                //max number of neighbors per node
-	neighbors [][]int            // neighbors[id] = IDs that node `id` links to
-	entry     int                // entry point to the graph (the first node added)
+	store          *store.Store       //vector lives in this store
+	dist           store.DistanceFunc //measure closeness
+	m              int                //max number of neighbors per node
+	neighbors      [][]int            // neighbors[id] = IDs that node `id` links to
+	efConstruction int                //size of the dynamic candidate list during construction
+	entry          int                // entry point to the graph (the first node added)
 }
 
 func New(s *store.Store, dist store.DistanceFunc, m int) *Index {
 	return &Index{
-		store:     s,
-		dist:      dist,
-		m:         m,
-		neighbors: make([][]int, 0, s.Len()),
-		entry:     -1,
+		store:          s,
+		dist:           dist,
+		m:              m,
+		neighbors:      make([][]int, 0, s.Len()),
+		efConstruction: 100,
+		entry:          -1,
 	}
 }
 
@@ -109,4 +111,42 @@ func (idx *Index) searchLayer(query []float32, start int, ef int) []store.Result
 		out[i] = heap.Pop(results).(store.Result)
 	}
 	return out
+}
+
+func (idx *Index) Insert(v []float32) int {
+	id := idx.store.Add(v)
+	idx.addNode()
+	if id == 0 {
+		return id
+	}
+
+	// Search for the nearest existing nodes.
+	found := idx.searchLayer(v, idx.entry, idx.efConstruction)
+
+	// Connect the new node to the m closest.
+	for i := 0; i < len(found) && i < idx.m; i++ {
+		idx.connect(id, found[i].ID)
+	}
+	return id
+}
+
+func (idx *Index) prune(id int) {
+	if id >= len(idx.neighbors) {
+		panic("invalid node ID")
+	}
+	if len(idx.neighbors[id]) <= idx.m {
+		return
+	}
+	neighbors := idx.neighbors[id]
+	v := idx.store.Get(id)
+	worstDist := float32(-1)
+	worst := 0
+	for i := 0; i < len(neighbors); i++ {
+		d := idx.dist(v, idx.store.Get(neighbors[i]))
+		if d > worstDist {
+			worst = i
+			worstDist = d
+		}
+	}
+	idx.neighbors[id] = slices.Delete(neighbors, worst, worst+1)
 }
