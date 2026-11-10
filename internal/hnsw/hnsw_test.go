@@ -167,3 +167,31 @@ func TestPrune(t *testing.T) {
 		t.Errorf("neighbors[1] = %v, want [0]", got)
 	}
 }
+
+func TestSearch(t *testing.T) {
+	empty := New(store.New(1), distance.L2Squared, 4)
+	if got := empty.Search([]float32{1}, 3, 10); len(got) != 0 {
+		t.Errorf("empty index: got %d results, want 0", len(got))
+	}
+
+	idx := New(store.New(1), distance.L2Squared, 4)
+	for v := range 20 {
+		idx.Insert([]float32{float32(v)}) // values 0 through 19
+	}
+
+	got := idx.Search([]float32{12.3}, 3, 10)
+	want := []int{12, 13, 11}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d", len(got), len(want))
+	}
+	for i, id := range want {
+		if got[i].ID != id {
+			t.Errorf("result %d: node %d, want node %d", i, got[i].ID, id)
+		}
+	}
+
+	// ef smaller than k still returns k results
+	if got := idx.Search([]float32{12.3}, 3, 1); len(got) != 3 {
+		t.Errorf("ef < k: got %d results, want 3", len(got))
+	}
+}

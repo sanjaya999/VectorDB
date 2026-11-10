@@ -150,3 +150,14 @@ func (idx *Index) prune(id int) {
 	}
 	idx.neighbors[id] = slices.Delete(neighbors, worst, worst+1)
 }
+
+func (idx *Index) Search(query []float32, k, ef int) []store.Result {
+	if idx.entry == -1 || k <= 0 {
+		return []store.Result{}
+	}
+	if ef < k {
+		ef = k
+	}
+	results := idx.searchLayer(query, idx.entry, ef)
+	return results[0:min(k, len(results))]
+}
