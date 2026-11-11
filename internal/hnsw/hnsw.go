@@ -3,6 +3,7 @@ package hnsw
 import (
 	"container/heap"
 	"slices"
+	"sort"
 
 	"github.com/sanjaya999/vectorDB/internal/store"
 )
@@ -123,9 +124,9 @@ func (idx *Index) Insert(v []float32) int {
 	// Search for the nearest existing nodes.
 	found := idx.searchLayer(v, idx.entry, idx.efConstruction)
 
-	// Connect the new node to the m closest.
-	for i := 0; i < len(found) && i < idx.m; i++ {
-		idx.connect(id, found[i].ID)
+	for _, n := range idx.selectNeighbors(found, idx.m) {
+		idx.connect(id, n)
+		idx.prune(n)
 	}
 	return id
 }
@@ -134,21 +135,17 @@ func (idx *Index) prune(id int) {
 	if id >= len(idx.neighbors) {
 		panic("invalid node ID")
 	}
-	if len(idx.neighbors[id]) <= idx.m {
+	if len(idx.neighbors[id]) <= 2*idx.m {
 		return
 	}
-	neighbors := idx.neighbors[id]
 	v := idx.store.Get(id)
-	worstDist := float32(-1)
-	worst := 0
-	for i := 0; i < len(neighbors); i++ {
-		d := idx.dist(v, idx.store.Get(neighbors[i]))
-		if d > worstDist {
-			worst = i
-			worstDist = d
-		}
+	links := idx.neighbors[id]
+	cands := make([]store.Result, len(links))
+	for i, n := range links {
+		cands[i] = store.Result{ID: n, Dist: idx.dist(v, idx.store.Get(n))}
 	}
-	idx.neighbors[id] = slices.Delete(neighbors, worst, worst+1)
+	sort.SliceStable(cands, func(i, j int) bool { return cands[i].Dist < cands[j].Dist })
+	idx.neighbors[id] = idx.selectNeighbors(cands, 2*idx.m)
 }
 
 func (idx *Index) Search(query []float32, k, ef int) []store.Result {
@@ -160,4 +157,40 @@ func (idx *Index) Search(query []float32, k, ef int) []store.Result {
 	}
 	results := idx.searchLayer(query, idx.entry, ef)
 	return results[0:min(k, len(results))]
+}
+
+func (idx *Index) selectNeighbors(candidates []store.Result, limit int) []int {
+	var selected []int
+	for _, candidate := range candidates {
+		if len(selected) >= limit {
+			return selected
+		}
+
+		if len(selected) == 0 {
+			selected = append(selected, candidate.ID)
+			continue
+		}
+		v := idx.store.Get(candidate.ID)
+		isGood := true
+		for _, s := range selected {
+			w := idx.store.Get(s)
+			if idx.dist(v, w) < candidate.Dist {
+				isGood = false
+				break
+			}
+		}
+		if isGood {
+			selected = append(selected, candidate.ID)
+		}
+	}
+	return selected
+}
+
+// AvgLinks returns the average number of links per node.
+func (idx *Index) AvgLinks() float64 {
+	total := 0
+	for _, links := range idx.neighbors {
+		total += len(links)
+	}
+	return float64(total) / float64(len(idx.neighbors))
 }

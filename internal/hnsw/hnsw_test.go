@@ -116,7 +116,6 @@ func TestSearchLayerChain(t *testing.T) {
 		}
 	}
 }
-
 func TestInsert(t *testing.T) {
 	idx := New(store.New(1), distance.L2Squared, 2)
 	for want, v := range []float32{0, 1, 2, 10} {
@@ -124,13 +123,14 @@ func TestInsert(t *testing.T) {
 			t.Fatalf("Insert returned id %d, want %d", got, want)
 		}
 	}
-	// node 3 (value 10) links to its two nearest: node 2, then node 1
-	if got := idx.neighbors[3]; !slices.Equal(got, []int{2, 1}) {
-		t.Errorf("neighbors[3] = %v, want [2 1]", got)
+	// node 3 (value 10) links only to node 2: nodes 1 and 0 lie in the
+	// same direction and can be reached through node 2
+	if got := idx.neighbors[3]; !slices.Equal(got, []int{2}) {
+		t.Errorf("neighbors[3] = %v, want [2]", got)
 	}
-	// links go both ways
-	if !slices.Contains(idx.neighbors[2], 3) || !slices.Contains(idx.neighbors[1], 3) {
-		t.Errorf("nodes 2 and 1 should link back to node 3")
+	// node 2 links back, so node 3 can be reached
+	if !slices.Contains(idx.neighbors[2], 3) {
+		t.Errorf("node 2 should link back to node 3")
 	}
 }
 
@@ -150,11 +150,10 @@ func TestInsertThenSearch(t *testing.T) {
 		}
 	}
 }
-
 func TestPrune(t *testing.T) {
 	// node 0 (value 5) linked to nodes at values 4, 6, and 20
 	idx := buildGraph([]float32{5, 4, 6, 20}, [][2]int{{0, 1}, {0, 2}, {0, 3}})
-	idx.m = 2
+	idx.m = 1 // the cap is 2 × m, so 2 links
 
 	idx.prune(0)
 	if got := idx.neighbors[0]; !slices.Equal(got, []int{1, 2}) {
@@ -193,5 +192,30 @@ func TestSearch(t *testing.T) {
 	// ef smaller than k still returns k results
 	if got := idx.Search([]float32{12.3}, 3, 1); len(got) != 3 {
 		t.Errorf("ef < k: got %d results, want 3", len(got))
+	}
+}
+
+func TestSelectNeighbors(t *testing.T) {
+	// The node choosing neighbors sits at value 0.
+	// id:     0   1   2    3
+	// value:  1   2   -1   5
+	idx := buildGraph([]float32{1, 2, -1, 5}, nil)
+	idx.m = 3
+	cands := []store.Result{ // closest-first, distances measured from value 0
+		{ID: 0, Dist: 1},
+		{ID: 2, Dist: 1},
+		{ID: 1, Dist: 4},
+		{ID: 3, Dist: 25},
+	}
+
+	// node 0 (value 1) is picked. node 2 (value -1) is on the other side, so it's kept.
+	// node 1 (value 2) and node 3 (value 5) are closer to node 0 than to us, so they're skipped.
+	if got := idx.selectNeighbors(cands, 3); !slices.Equal(got, []int{0, 2}) {
+		t.Errorf("got %v, want [0 2]", got)
+	}
+
+	// the cap still applies
+	if got := idx.selectNeighbors(cands, 1); !slices.Equal(got, []int{0}) {
+		t.Errorf("m=1: got %v, want [0]", got)
 	}
 }

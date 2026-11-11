@@ -71,7 +71,7 @@ func main() {
 		}
 	}
 	fmt.Printf("built index: %d vectors, m=%d, in %v\n\n", n, *m, time.Since(t0).Round(time.Second))
-
+	fmt.Printf("average links per node: %.1f\n", idx.AvgLinks())
 	// Exact search: the true answers and the baseline speed.
 	truth, exactTime := runAll(numQ, func(qi int) []store.Result {
 		return s.Search(query(qi), *k, distance.L2Squared)
