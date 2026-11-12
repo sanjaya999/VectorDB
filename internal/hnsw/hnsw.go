@@ -2,6 +2,7 @@ package hnsw
 
 import (
 	"container/heap"
+	"math/rand"
 	"slices"
 	"sort"
 
@@ -15,6 +16,8 @@ type Index struct {
 	neighbors      [][][]int          // neighbors[id] = IDs that node `id` links to
 	efConstruction int                //size of the dynamic candidate list during construction
 	entry          int                // entry point to the graph (the first node added)
+	maxLevel       int                // maximum level of the graph (not used in this simplified version)
+	rng            *rand.Rand         //random number generator for reproducibility
 }
 
 func New(s *store.Store, dist store.DistanceFunc, m int) *Index {
@@ -25,7 +28,19 @@ func New(s *store.Store, dist store.DistanceFunc, m int) *Index {
 		neighbors:      make([][][]int, 0, s.Len()),
 		efConstruction: 100,
 		entry:          -1,
+		maxLevel:       0,
+		rng:            rand.New(rand.NewSource(42)), // fixed seed for reproducibility
 	}
+}
+
+// randomLevel picks the top layer for a new node. Each extra level has a
+// 1-in-m chance, so most nodes stay on layer 0 and very few go high.
+func (idx *Index) randomLevel() int {
+	level := 0
+	for idx.rng.Float64() < 1/float64(idx.m) {
+		level++
+	}
+	return level
 }
 
 func (idx *Index) addNode(level int) int {
@@ -116,17 +131,28 @@ func (idx *Index) searchLayer(query []float32, start int, ef, layer int) []store
 
 func (idx *Index) Insert(v []float32) int {
 	id := idx.store.Add(v)
-	idx.addNode(0)
+	level := idx.randomLevel()
+	idx.addNode(level)
 	if id == 0 {
+		idx.maxLevel = level
 		return id
 	}
+	ep := idx.entry
+	for layer := idx.maxLevel; layer > level+1; layer-- {
+		ep, _ = idx.greedy(v, ep, layer)
+	}
+	for layer := min(level, idx.maxLevel); layer >= 0; layer-- {
+		// Search for the nearest existing nodes.
+		found := idx.searchLayer(v, ep, idx.efConstruction, layer)
 
-	// Search for the nearest existing nodes.
-	found := idx.searchLayer(v, idx.entry, idx.efConstruction, 0)
-
-	for _, n := range idx.selectNeighbors(found, idx.m) {
-		idx.connect(id, n, 0)
-		idx.prune(n, 0)
+		for _, n := range idx.selectNeighbors(found, idx.m) {
+			idx.connect(id, n, layer)
+			idx.prune(n, layer)
+		}
+	}
+	if level > idx.maxLevel {
+		idx.maxLevel = level
+		idx.entry = id
 	}
 	return id
 }
@@ -135,7 +161,11 @@ func (idx *Index) prune(id, layer int) {
 	if id >= len(idx.neighbors) {
 		panic("invalid node ID")
 	}
-	if len(idx.neighbors[id][layer]) <= 2*idx.m {
+	maxLinks := idx.m
+	if layer == 0 {
+		maxLinks = 2 * idx.m
+	}
+	if len(idx.neighbors[id][layer]) <= maxLinks {
 		return
 	}
 	v := idx.store.Get(id)
@@ -145,7 +175,7 @@ func (idx *Index) prune(id, layer int) {
 		cands[i] = store.Result{ID: n, Dist: idx.dist(v, idx.store.Get(n))}
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].Dist < cands[j].Dist })
-	idx.neighbors[id][layer] = idx.selectNeighbors(cands, 2*idx.m)
+	idx.neighbors[id][layer] = idx.selectNeighbors(cands, maxLinks)
 }
 
 func (idx *Index) Search(query []float32, k, ef int) []store.Result {
@@ -155,7 +185,11 @@ func (idx *Index) Search(query []float32, k, ef int) []store.Result {
 	if ef < k {
 		ef = k
 	}
-	results := idx.searchLayer(query, idx.entry, ef, 0)
+	ep := idx.entry
+	for layer := idx.maxLevel; layer > 0; layer-- {
+		ep, _ = idx.greedy(query, ep, layer)
+	}
+	results := idx.searchLayer(query, ep, ef, 0)
 	return results[0:min(k, len(results))]
 }
 

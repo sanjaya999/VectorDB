@@ -156,6 +156,11 @@ func TestPrune(t *testing.T) {
 	// node 0 (value 5) linked to nodes at values 4, 6, and 20
 	idx := buildGraph([]float32{5, 4, 6, 20}, [][2]int{{0, 1}, {0, 2}, {0, 3}})
 	idx.m = 1 // the cap is 2 × m, so 2 links
+	idx.maxLevel = 1
+	idx.neighbors[0] = append(idx.neighbors[0], make([]int, 1))
+	idx.neighbors[1] = append(idx.neighbors[1], make([]int, 1))
+	idx.neighbors[2] = append(idx.neighbors[2], make([]int, 1))
+	idx.neighbors[3] = append(idx.neighbors[3], make([]int, 1))
 
 	idx.prune(0, 0)
 	if got := idx.neighbors[0][0]; !slices.Equal(got, []int{1, 2}) {
