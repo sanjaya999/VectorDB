@@ -12,7 +12,7 @@ type Index struct {
 	store          *store.Store       //vector lives in this store
 	dist           store.DistanceFunc //measure closeness
 	m              int                //max number of neighbors per node
-	neighbors      [][]int            // neighbors[id] = IDs that node `id` links to
+	neighbors      [][][]int          // neighbors[id] = IDs that node `id` links to
 	efConstruction int                //size of the dynamic candidate list during construction
 	entry          int                // entry point to the graph (the first node added)
 }
@@ -22,15 +22,15 @@ func New(s *store.Store, dist store.DistanceFunc, m int) *Index {
 		store:          s,
 		dist:           dist,
 		m:              m,
-		neighbors:      make([][]int, 0, s.Len()),
+		neighbors:      make([][][]int, 0, s.Len()),
 		efConstruction: 100,
 		entry:          -1,
 	}
 }
 
-func (idx *Index) addNode() int {
+func (idx *Index) addNode(level int) int {
 	id := len(idx.neighbors)
-	idx.neighbors = append(idx.neighbors, make([]int, 0, idx.m))
+	idx.neighbors = append(idx.neighbors, make([][]int, level+1))
 
 	if idx.entry == -1 {
 		idx.entry = id
@@ -39,27 +39,27 @@ func (idx *Index) addNode() int {
 	return id
 }
 
-func (idx *Index) connect(a, b int) {
+func (idx *Index) connect(a, b, layer int) {
 	if a >= len(idx.neighbors) || b >= len(idx.neighbors) {
 		panic("invalid node ID")
 	}
 	if a == b {
 		return
 	}
-	if slices.Contains(idx.neighbors[a], b) {
+	if slices.Contains(idx.neighbors[a][layer], b) {
 		return
 	}
-	idx.neighbors[a] = append(idx.neighbors[a], b)
-	idx.neighbors[b] = append(idx.neighbors[b], a)
+	idx.neighbors[a][layer] = append(idx.neighbors[a][layer], b)
+	idx.neighbors[b][layer] = append(idx.neighbors[b][layer], a)
 }
 
-func (idx *Index) greedy(query []float32, start int) (int, float32) {
+func (idx *Index) greedy(query []float32, start, layer int) (int, float32) {
 	current := start
 	currentDistance := idx.dist(query, idx.store.Get(current))
 
 	for {
 		prev := current
-		for _, vec := range idx.neighbors[current] {
+		for _, vec := range idx.neighbors[current][layer] {
 			dist := idx.dist(query, idx.store.Get(vec))
 			if dist < currentDistance {
 				current = vec
@@ -74,7 +74,7 @@ func (idx *Index) greedy(query []float32, start int) (int, float32) {
 
 // searchLayer explores the graph from start and returns the ef closest
 // nodes it finds, sorted closest-first.
-func (idx *Index) searchLayer(query []float32, start int, ef int) []store.Result {
+func (idx *Index) searchLayer(query []float32, start int, ef, layer int) []store.Result {
 	first := store.Result{ID: start, Dist: idx.dist(query, idx.store.Get(start))}
 
 	visited := map[int]bool{start: true}
@@ -86,7 +86,7 @@ func (idx *Index) searchLayer(query []float32, start int, ef int) []store.Result
 		if c.Dist > (*results)[0].Dist {
 			break
 		}
-		for _, neighbor := range idx.neighbors[c.ID] {
+		for _, neighbor := range idx.neighbors[c.ID][layer] {
 			if visited[neighbor] {
 				continue
 			}
@@ -116,36 +116,36 @@ func (idx *Index) searchLayer(query []float32, start int, ef int) []store.Result
 
 func (idx *Index) Insert(v []float32) int {
 	id := idx.store.Add(v)
-	idx.addNode()
+	idx.addNode(0)
 	if id == 0 {
 		return id
 	}
 
 	// Search for the nearest existing nodes.
-	found := idx.searchLayer(v, idx.entry, idx.efConstruction)
+	found := idx.searchLayer(v, idx.entry, idx.efConstruction, 0)
 
 	for _, n := range idx.selectNeighbors(found, idx.m) {
-		idx.connect(id, n)
-		idx.prune(n)
+		idx.connect(id, n, 0)
+		idx.prune(n, 0)
 	}
 	return id
 }
 
-func (idx *Index) prune(id int) {
+func (idx *Index) prune(id, layer int) {
 	if id >= len(idx.neighbors) {
 		panic("invalid node ID")
 	}
-	if len(idx.neighbors[id]) <= 2*idx.m {
+	if len(idx.neighbors[id][layer]) <= 2*idx.m {
 		return
 	}
 	v := idx.store.Get(id)
-	links := idx.neighbors[id]
+	links := idx.neighbors[id][layer]
 	cands := make([]store.Result, len(links))
 	for i, n := range links {
 		cands[i] = store.Result{ID: n, Dist: idx.dist(v, idx.store.Get(n))}
 	}
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].Dist < cands[j].Dist })
-	idx.neighbors[id] = idx.selectNeighbors(cands, 2*idx.m)
+	idx.neighbors[id][layer] = idx.selectNeighbors(cands, 2*idx.m)
 }
 
 func (idx *Index) Search(query []float32, k, ef int) []store.Result {
@@ -155,7 +155,7 @@ func (idx *Index) Search(query []float32, k, ef int) []store.Result {
 	if ef < k {
 		ef = k
 	}
-	results := idx.searchLayer(query, idx.entry, ef)
+	results := idx.searchLayer(query, idx.entry, ef, 0)
 	return results[0:min(k, len(results))]
 }
 
@@ -189,8 +189,8 @@ func (idx *Index) selectNeighbors(candidates []store.Result, limit int) []int {
 // AvgLinks returns the average number of links per node.
 func (idx *Index) AvgLinks() float64 {
 	total := 0
-	for _, links := range idx.neighbors {
-		total += len(links)
+	for _, layers := range idx.neighbors {
+		total += len(layers[0])
 	}
 	return float64(total) / float64(len(idx.neighbors))
 }
