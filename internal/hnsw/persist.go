@@ -5,7 +5,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
+
+	"github.com/sanjaya999/vectorDB/internal/store"
 )
 
 const formatVersion = 1
@@ -172,4 +175,79 @@ func (idx *Index) Save(path string) error {
 		return fmt.Errorf("closing %s: %w", path, err)
 	}
 	return nil
+}
+
+// checkHeader rejects header values that cannot describe a real index.
+func checkHeader(h fileHeader, fileSize int64) error {
+	if h.Dim < 1 || h.Dim > 1<<16 {
+		return fmt.Errorf("invalid dimension %d", h.Dim)
+	}
+	if h.M < 2 {
+		return fmt.Errorf("invalid m %d", h.M)
+	}
+	if h.EfConstruction < 1 {
+		return fmt.Errorf("invalid efConstruction %d", h.EfConstruction)
+	}
+	if h.MaxLevel >= maxFileLayers {
+		return fmt.Errorf("invalid max level %d", h.MaxLevel)
+	}
+	if h.Count == 0 && h.Entry != -1 {
+		return fmt.Errorf("empty index has entry %d, want -1", h.Entry)
+	}
+	if h.Count > 0 && (h.Entry < 0 || int64(h.Entry) >= int64(h.Count)) {
+		return fmt.Errorf("entry %d is not a valid node (index has %d nodes)", h.Entry, h.Count)
+	}
+	if need := 32 + 4*int64(h.Count)*int64(h.Dim); fileSize < need {
+		return fmt.Errorf("file is %d bytes, too short for %d vectors of dimension %d", fileSize, h.Count, h.Dim)
+	}
+	return nil
+}
+
+// Load reads an index written by Save.
+// dist must be the same distance function the index was built with.
+func Load(path string, dist store.DistanceFunc) (*Index, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening %s: %w", path, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	r := bufio.NewReaderSize(f, 1<<20)
+	h, err := readHeader(r)
+	if err != nil {
+		return nil, fmt.Errorf("reading header: %w", err)
+	}
+	if err := checkHeader(h, info.Size()); err != nil {
+		return nil, fmt.Errorf("checking header: %w", err)
+	}
+	data, err := readVectors(r, int(h.Count)*int(h.Dim))
+	if err != nil {
+		return nil, fmt.Errorf("reading vectors: %w", err)
+	}
+	s, err := store.FromData(int(h.Dim), data)
+	if err != nil {
+		return nil, fmt.Errorf("creating store: %w", err)
+	}
+	neighbors, err := readGraph(r, int(h.Count))
+	if err != nil {
+		return nil, fmt.Errorf("reading graph: %w", err)
+	}
+	if h.Count > 0 && len(neighbors[h.Entry]) != int(h.MaxLevel)+1 {
+		return nil, fmt.Errorf("loading %s: entry node %d has %d layers, but max level is %d",
+			path, h.Entry, len(neighbors[h.Entry]), h.MaxLevel)
+	}
+	return &Index{
+		store:          s,
+		neighbors:      neighbors,
+		m:              int(h.M),
+		efConstruction: int(h.EfConstruction),
+		entry:          int(h.Entry),
+		maxLevel:       int(h.MaxLevel),
+		dist:           dist,
+		rng:            rand.New(rand.NewSource(int64(h.Count) + 1)),
+	}, nil
 }

@@ -323,3 +323,109 @@ func TestSaveWritesWholeFile(t *testing.T) {
 		t.Fatalf("file is %d bytes, want %d (a short file usually means a missing Flush)", len(data), want)
 	}
 }
+
+func TestSaveLoadRoundTrip(t *testing.T) {
+	const n, dim = 500, 8
+	idx := buildTestIndex(n, dim)
+	path := filepath.Join(t.TempDir(), "index.vdb")
+	if err := idx.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(path, distance.L2Squared)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Same settings, vectors and links.
+	if loaded.m != idx.m || loaded.efConstruction != idx.efConstruction ||
+		loaded.entry != idx.entry || loaded.maxLevel != idx.maxLevel {
+		t.Fatalf("settings differ: got m=%d efc=%d entry=%d maxLevel=%d, want m=%d efc=%d entry=%d maxLevel=%d",
+			loaded.m, loaded.efConstruction, loaded.entry, loaded.maxLevel,
+			idx.m, idx.efConstruction, idx.entry, idx.maxLevel)
+	}
+	if loaded.store.Dim() != dim || !slices.Equal(loaded.store.Data(), idx.store.Data()) {
+		t.Fatal("vectors differ after load")
+	}
+	if !sameGraph(loaded.neighbors, idx.neighbors) {
+		t.Fatal("links differ after load")
+	}
+
+	// Same answers to the same queries.
+	rng := rand.New(rand.NewSource(7))
+	for range 50 {
+		q := make([]float32, dim)
+		for j := range q {
+			q[j] = rng.Float32()
+		}
+		want := idx.Search(q, 10, 50)
+		got := loaded.Search(q, 10, 50)
+		if !slices.Equal(got, want) {
+			t.Fatalf("search results differ:\n got %v\nwant %v", got, want)
+		}
+	}
+
+	// Insert still works, and does not touch the original index.
+	v := make([]float32, dim)
+	for j := range v {
+		v[j] = 0.5
+	}
+	if id := loaded.Insert(v); id != n {
+		t.Fatalf("Insert after Load returned %d, want %d", id, n)
+	}
+	if loaded.store.Len() != n+1 || len(loaded.neighbors) != n+1 {
+		t.Fatalf("after Insert: %d vectors, %d nodes, want %d of each", loaded.store.Len(), len(loaded.neighbors), n+1)
+	}
+	if len(loaded.neighbors[n][0]) == 0 {
+		t.Fatal("the inserted node has no links")
+	}
+	if got := loaded.Search(v, 10, 50); len(got) != 10 {
+		t.Fatalf("Search after Insert returned %d results, want 10", len(got))
+	}
+	if idx.store.Len() != n {
+		t.Fatalf("original index changed: %d vectors, want %d", idx.store.Len(), n)
+	}
+}
+
+func TestLoadRejectsBadFiles(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.vdb")
+	if err := buildTestIndex(100, 8).Save(good); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(good)
+	if err != nil {
+		t.Fatalf("reading file back: %v", err)
+	}
+
+	write := func(name string, b []byte) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, b, 0o644); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
+		return p
+	}
+
+	badEntry := slices.Clone(data)
+	binary.LittleEndian.PutUint32(badEntry[24:], 9999) // entry field
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"missing file", filepath.Join(dir, "nope.vdb")},
+		{"empty file", write("empty.vdb", nil)},
+		{"not an index file", write("text.vdb", []byte("this is just some text, long enough to fill a header"))},
+		{"cut inside the vectors", write("cut1.vdb", data[:100])},
+		{"cut inside the graph", write("cut2.vdb", data[:len(data)-5])},
+		{"entry past the last node", write("entry.vdb", badEntry)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			idx, err := Load(c.path, distance.L2Squared)
+			if err == nil {
+				t.Fatalf("got an index with %d nodes, want an error", len(idx.neighbors))
+			}
+			t.Logf("error: %v", err)
+		})
+	}
+}
