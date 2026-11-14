@@ -1,6 +1,10 @@
 package store
 
-import "log"
+import (
+	"fmt"
+	"log"
+	"slices"
+)
 
 type Store struct {
 	//dimensions of the vector
@@ -54,4 +58,30 @@ func (s *Store) Get(id int) []float32 {
 	start := id * s.dim
 	end := start + s.dim
 	return s.data[start:end:end]
+}
+
+// return the dimension of the store
+func (s *Store) Dim() int {
+
+	return s.dim
+}
+
+// return the data from the store
+func (s *Store) Data() []float32 {
+
+	return slices.Clip(s.data)
+}
+
+func FromData(dim int, data []float32) (*Store, error) {
+	if dim <= 0 {
+		return nil, fmt.Errorf("dimension must be positive, got %d", dim)
+	}
+	if len(data)%dim != 0 {
+		return nil, fmt.Errorf("data length is not a multiple of dimension")
+	}
+	s := &Store{
+		dim:  dim,
+		data: slices.Clip(data),
+	}
+	return s, nil
 }
