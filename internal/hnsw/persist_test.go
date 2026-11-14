@@ -3,8 +3,14 @@ package hnsw
 import (
 	"bytes"
 	"encoding/binary"
+	"math/rand"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/sanjaya999/vectorDB/internal/distance"
+	"github.com/sanjaya999/vectorDB/internal/store"
 )
 
 func TestWriteHeader(t *testing.T) {
@@ -274,5 +280,46 @@ func TestReadGraphRejectsBadData(t *testing.T) {
 			}
 			t.Logf("error: %v", err)
 		})
+	}
+}
+
+// buildTestIndex makes a small index of random vectors.
+func buildTestIndex(n, dim int) *Index {
+	rng := rand.New(rand.NewSource(42))
+	idx := New(store.New(dim), distance.L2Squared, 4)
+	for range n {
+		v := make([]float32, dim)
+		for j := range v {
+			v[j] = rng.Float32()
+		}
+		idx.Insert(v)
+	}
+	return idx
+}
+
+func TestSaveWritesWholeFile(t *testing.T) {
+	const n, dim = 300, 8
+	idx := buildTestIndex(n, dim)
+
+	path := filepath.Join(t.TempDir(), "index.vdb")
+	if err := idx.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading file back: %v", err)
+	}
+	if !bytes.HasPrefix(data, fileMagic[:]) {
+		t.Fatalf("file does not start with the magic bytes")
+	}
+
+	var graph bytes.Buffer
+	if err := writeGraph(&graph, idx.neighbors); err != nil {
+		t.Fatalf("writeGraph: %v", err)
+	}
+	want := 32 + 4*n*dim + graph.Len() // header + vectors + graph
+	if len(data) != want {
+		t.Fatalf("file is %d bytes, want %d (a short file usually means a missing Flush)", len(data), want)
 	}
 }

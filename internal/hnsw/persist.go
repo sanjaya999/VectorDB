@@ -1,9 +1,11 @@
 package hnsw
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
 )
 
 const formatVersion = 1
@@ -131,4 +133,43 @@ func readGraph(r io.Reader, count int) ([][][]int, error) {
 		neighbors[node] = layers
 	}
 	return neighbors, nil
+}
+
+func (idx *Index) Save(path string) error {
+	if idx.store.Len() != len(idx.neighbors) {
+		return fmt.Errorf("index has %d vectors but %d graph nodes", idx.store.Len(), len(idx.neighbors))
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	defer f.Close()
+
+	w := bufio.NewWriterSize(f, 1<<20)
+	h := fileHeader{
+		Magic:          fileMagic,
+		Version:        formatVersion,
+		Dim:            uint32(idx.store.Dim()),
+		Count:          uint32(idx.store.Len()),
+		M:              uint32(idx.m),
+		EfConstruction: uint32(idx.efConstruction),
+		Entry:          int32(idx.entry),
+		MaxLevel:       uint32(idx.maxLevel),
+	}
+	if err := writeHeader(w, h); err != nil {
+		return fmt.Errorf("writing header: %w", err)
+	}
+	if err := writeVectors(w, idx.store.Data()); err != nil {
+		return err
+	}
+	if err := writeGraph(w, idx.neighbors); err != nil {
+		return err
+	}
+	if err := w.Flush(); err != nil {
+		return fmt.Errorf("flushing to %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", path, err)
+	}
+	return nil
 }
