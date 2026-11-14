@@ -3,6 +3,7 @@ package hnsw
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -427,5 +428,68 @@ func TestLoadRejectsBadFiles(t *testing.T) {
 			}
 			t.Logf("error: %v", err)
 		})
+	}
+}
+
+func TestSaveReplacesFileAtomically(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.vdb")
+
+	if err := buildTestIndex(100, 8).Save(path); err != nil {
+		t.Fatalf("first Save: %v", err)
+	}
+	oldBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A reader that opened the file before the second Save.
+	reader, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	if err := buildTestIndex(200, 8).Save(path); err != nil {
+		t.Fatalf("second Save: %v", err)
+	}
+
+	// The old reader still sees the complete old file.
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, oldBytes) {
+		t.Fatal("the old file was modified in place; Save must replace it by rename")
+	}
+
+	// The name now points at the new index.
+	loaded, err := Load(path, distance.L2Squared)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.store.Len() != 200 {
+		t.Fatalf("loaded %d vectors, want 200", loaded.store.Len())
+	}
+
+	// No temporary file is left behind.
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temporary file still exists (stat error: %v)", err)
+	}
+}
+
+func TestSaveCleansUpWhenRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "taken")
+	if err := os.Mkdir(target, 0o755); err != nil { // a directory is in the way
+		t.Fatal(err)
+	}
+	err := buildTestIndex(50, 8).Save(target)
+	if err == nil {
+		t.Fatal("want an error when the target is a directory")
+	}
+	t.Logf("error: %v", err)
+	if _, statErr := os.Stat(target + ".tmp"); !os.IsNotExist(statErr) {
+		t.Fatalf("temporary file left behind (stat error: %v)", statErr)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"path/filepath"
 
 	"github.com/sanjaya999/vectorDB/internal/store"
 )
@@ -138,45 +139,6 @@ func readGraph(r io.Reader, count int) ([][][]int, error) {
 	return neighbors, nil
 }
 
-func (idx *Index) Save(path string) error {
-	if idx.store.Len() != len(idx.neighbors) {
-		return fmt.Errorf("index has %d vectors but %d graph nodes", idx.store.Len(), len(idx.neighbors))
-	}
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("creating %s: %w", path, err)
-	}
-	defer f.Close()
-
-	w := bufio.NewWriterSize(f, 1<<20)
-	h := fileHeader{
-		Magic:          fileMagic,
-		Version:        formatVersion,
-		Dim:            uint32(idx.store.Dim()),
-		Count:          uint32(idx.store.Len()),
-		M:              uint32(idx.m),
-		EfConstruction: uint32(idx.efConstruction),
-		Entry:          int32(idx.entry),
-		MaxLevel:       uint32(idx.maxLevel),
-	}
-	if err := writeHeader(w, h); err != nil {
-		return fmt.Errorf("writing header: %w", err)
-	}
-	if err := writeVectors(w, idx.store.Data()); err != nil {
-		return err
-	}
-	if err := writeGraph(w, idx.neighbors); err != nil {
-		return err
-	}
-	if err := w.Flush(); err != nil {
-		return fmt.Errorf("flushing to %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("closing %s: %w", path, err)
-	}
-	return nil
-}
-
 // checkHeader rejects header values that cannot describe a real index.
 func checkHeader(h fileHeader, fileSize int64) error {
 	if h.Dim < 1 || h.Dim > 1<<16 {
@@ -208,33 +170,33 @@ func checkHeader(h fileHeader, fileSize int64) error {
 func Load(path string, dist store.DistanceFunc) (*Index, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("opening %s: %w", path, err)
+		return nil, err
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("stat %s: %w", path, err)
+		return nil, err
 	}
 	r := bufio.NewReaderSize(f, 1<<20)
 	h, err := readHeader(r)
 	if err != nil {
-		return nil, fmt.Errorf("reading header: %w", err)
+		return nil, fmt.Errorf("loading %s: %w", path, err)
 	}
 	if err := checkHeader(h, info.Size()); err != nil {
-		return nil, fmt.Errorf("checking header: %w", err)
+		return nil, fmt.Errorf("loading %s: %w", path, err)
 	}
 	data, err := readVectors(r, int(h.Count)*int(h.Dim))
 	if err != nil {
-		return nil, fmt.Errorf("reading vectors: %w", err)
+		return nil, fmt.Errorf("loading %s: %w", path, err)
 	}
 	s, err := store.FromData(int(h.Dim), data)
 	if err != nil {
-		return nil, fmt.Errorf("creating store: %w", err)
+		return nil, fmt.Errorf("loading %s: %w", path, err)
 	}
 	neighbors, err := readGraph(r, int(h.Count))
 	if err != nil {
-		return nil, fmt.Errorf("reading graph: %w", err)
+		return nil, fmt.Errorf("loading %s: %w", path, err)
 	}
 	if h.Count > 0 && len(neighbors[h.Entry]) != int(h.MaxLevel)+1 {
 		return nil, fmt.Errorf("loading %s: entry node %d has %d layers, but max level is %d",
@@ -242,12 +204,80 @@ func Load(path string, dist store.DistanceFunc) (*Index, error) {
 	}
 	return &Index{
 		store:          s,
-		neighbors:      neighbors,
+		dist:           dist,
 		m:              int(h.M),
+		neighbors:      neighbors,
 		efConstruction: int(h.EfConstruction),
 		entry:          int(h.Entry),
 		maxLevel:       int(h.MaxLevel),
-		dist:           dist,
 		rng:            rand.New(rand.NewSource(int64(h.Count) + 1)),
 	}, nil
+}
+
+// Save writes the index to path. The file at path is replaced only after
+// the new one is complete, so a crash never leaves a half-written index.
+func (idx *Index) Save(path string) error {
+	tmp := path + ".tmp"
+	if err := idx.writeFile(tmp); err != nil {
+		os.Remove(tmp) // don't leave a broken temporary file behind
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("replacing %s: %w", path, err)
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// writeFile writes the whole index to a new file at path and forces it to disk.
+func (idx *Index) writeFile(path string) error {
+	if idx.store.Len() != len(idx.neighbors) {
+		return fmt.Errorf("index has %d vectors but %d graph nodes", idx.store.Len(), len(idx.neighbors))
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	defer f.Close()
+
+	w := bufio.NewWriterSize(f, 1<<20)
+	h := fileHeader{
+		Magic:          fileMagic,
+		Version:        formatVersion,
+		Dim:            uint32(idx.store.Dim()),
+		Count:          uint32(idx.store.Len()),
+		M:              uint32(idx.m),
+		EfConstruction: uint32(idx.efConstruction),
+		Entry:          int32(idx.entry),
+		MaxLevel:       uint32(idx.maxLevel),
+	}
+	if err := writeHeader(w, h); err != nil {
+		return fmt.Errorf("writing header: %w", err)
+	}
+	if err := writeVectors(w, idx.store.Data()); err != nil {
+		return err
+	}
+	if err := writeGraph(w, idx.neighbors); err != nil {
+		return err
+	}
+	if err := w.Flush(); err != nil { // program's buffer -> operating system
+		return fmt.Errorf("flushing to %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil { // operating system -> disk
+		return fmt.Errorf("syncing %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", path, err)
+	}
+	return nil
+}
+
+// syncDir makes a rename inside dir survive a power loss.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }

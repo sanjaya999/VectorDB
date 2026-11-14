@@ -20,6 +20,10 @@ type Index struct {
 	rng            *rand.Rand         //random number generator for reproducibility
 }
 
+// Store returns the store that holds the index's vectors.
+func (idx *Index) Store() *store.Store {
+	return idx.store
+}
 func New(s *store.Store, dist store.DistanceFunc, m int) *Index {
 	return &Index{
 		store:          s,

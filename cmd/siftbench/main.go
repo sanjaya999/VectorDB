@@ -38,7 +38,6 @@ func runAll(nq int, search func(qi int) []store.Result) ([][]store.Result, time.
 	wg.Wait()
 	return results, time.Since(t)
 }
-
 func main() {
 	dir := flag.String("dir", "sift", "path to extracted SIFT folder")
 	nBase := flag.Int("n", 0, "number of base vectors (0 = all 1M)")
@@ -46,32 +45,63 @@ func main() {
 	k := flag.Int("k", 10, "k for recall@k")
 	m := flag.Int("m", 16, "max links per node")
 	efs := flag.String("ef", "10,20,50,100,200", "ef values to try, comma separated")
+	savePath := flag.String("save", "", "save the built index to this file")
+	loadPath := flag.String("load", "", "load the index from this file instead of building (-n and -m are ignored)")
 	flag.Parse()
 
-	base, dim, err := dataset.ReadFvecs(*dir+"/sift_base.fvecs", *nBase)
+	var idx *hnsw.Index
+	if *loadPath != "" {
+		// Load a saved index: no base vectors to read and no build.
+		t0 := time.Now()
+		var err error
+		idx, err = hnsw.Load(*loadPath, distance.L2Squared)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("loaded index: %d vectors from %s in %v\n\n",
+			idx.Store().Len(), *loadPath, time.Since(t0).Round(time.Millisecond))
+	} else {
+		base, dim, err := dataset.ReadFvecs(*dir+"/sift_base.fvecs", *nBase)
+		if err != nil {
+			log.Fatal(err)
+		}
+		n := len(base) / dim
+
+		// Build: each Insert stores the vector and links it into the graph.
+		idx = hnsw.New(store.New(dim), distance.L2Squared, *m)
+		t0 := time.Now()
+		for i := 0; i < n; i++ {
+			idx.Insert(base[i*dim : (i+1)*dim])
+			if (i+1)%100000 == 0 {
+				fmt.Printf("  inserted %d (%v)\n", i+1, time.Since(t0).Round(time.Second))
+			}
+		}
+		fmt.Printf("built index: %d vectors, m=%d, in %v\n\n", n, *m, time.Since(t0).Round(time.Second))
+
+		if *savePath != "" {
+			t0 := time.Now()
+			if err := idx.Save(*savePath); err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("saved index to %s in %v\n\n", *savePath, time.Since(t0).Round(time.Millisecond))
+		}
+	}
+
+	// From here on, both modes are the same.
+	s := idx.Store()
+	dim := s.Dim()
+	fmt.Printf("average links per node: %.1f\n", idx.AvgLinks())
+
+	queries, qdim, err := dataset.ReadFvecs(*dir+"/sift_query.fvecs", *nq)
 	if err != nil {
 		log.Fatal(err)
 	}
-	queries, _, err := dataset.ReadFvecs(*dir+"/sift_query.fvecs", *nq)
-	if err != nil {
-		log.Fatal(err)
+	if qdim != dim {
+		log.Fatalf("queries have dim %d but the index has dim %d", qdim, dim)
 	}
-	n := len(base) / dim
 	numQ := len(queries) / dim
 	query := func(qi int) []float32 { return queries[qi*dim : (qi+1)*dim] }
 
-	// Build: each Insert stores the vector and links it into the graph.
-	s := store.New(dim)
-	idx := hnsw.New(s, distance.L2Squared, *m)
-	t0 := time.Now()
-	for i := 0; i < n; i++ {
-		idx.Insert(base[i*dim : (i+1)*dim])
-		if (i+1)%100000 == 0 {
-			fmt.Printf("  inserted %d (%v)\n", i+1, time.Since(t0).Round(time.Second))
-		}
-	}
-	fmt.Printf("built index: %d vectors, m=%d, in %v\n\n", n, *m, time.Since(t0).Round(time.Second))
-	fmt.Printf("average links per node: %.1f\n", idx.AvgLinks())
 	// Exact search: the true answers and the baseline speed.
 	truth, exactTime := runAll(numQ, func(qi int) []store.Result {
 		return s.Search(query(qi), *k, distance.L2Squared)
